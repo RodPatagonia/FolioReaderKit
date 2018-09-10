@@ -3,12 +3,14 @@ PODS:
   - FolioReaderKit (1.3.0):
     - AEXML (= 4.2.2)
     - FontBlaster (= 4.0.1)
+    - Fuzi
     - JSQWebViewController (= 6.0.0)
     - MenuItemKit (= 3.0.0)
     - RealmSwift (= 3.1.1)
     - SSZipArchive (= 2.1.1)
     - ZFDragableModalTransition (= 0.6)
   - FontBlaster (4.0.1)
+  - Fuzi (2.1.0)
   - JSQWebViewController (6.0.0)
   - MenuItemKit (3.0.0)
   - Nimble (7.0.2)
@@ -30,6 +32,7 @@ SPEC REPOS:
   https://github.com/cocoapods/specs.git:
     - AEXML
     - FontBlaster
+    - Fuzi
     - JSQWebViewController
     - MenuItemKit
     - Nimble
@@ -45,8 +48,9 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   AEXML: 5ebafc1b75e0bcf0f1b09b8ca8fed2d5a199479b
-  FolioReaderKit: 47af4947287e66a902d5d8af9577e10b8ad230f4
+  FolioReaderKit: 3c3ff80b846add942938a03d5dbf0f9da6ece559
   FontBlaster: 84229df8e3a7a6dacb190565bc543747a0c323f9
+  Fuzi: 8c57344debff6d3a0c76a9e0f549152defdaaa48
   JSQWebViewController: 51041569b75d19dbb6b7fe0b7ae053c32409a9be
   MenuItemKit: d9b539b28fdbbd7980d6f3668b9cd6daefeabd9b
   Nimble: bfe1f814edabba69ff145cb1283e04ed636a67f2
