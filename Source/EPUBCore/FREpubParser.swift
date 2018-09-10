@@ -8,6 +8,7 @@
 
 import UIKit
 import AEXML
+import Fuzi
 #if COCOAPODS
 import SSZipArchive
 #else
@@ -122,10 +123,11 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
     private func readContainer(with bookBasePath: String) throws {
         let containerPath = "META-INF/container.xml"
         let containerData = try Data(contentsOf: URL(fileURLWithPath: bookBasePath.appendingPathComponent(containerPath)), options: .alwaysMapped)
-        let xmlDoc = try AEXMLDocument(xml: containerData)
+        let xmlDoc = try XMLDocument(data: containerData)
+        let xmlFullPath = xmlDoc.root?.firstChild(tag: "rootfiles")?.firstChild(tag: "rootfile")?.attributes["full-path"]
         let opfResource = FRResource()
-        opfResource.href = xmlDoc.root["rootfiles"]["rootfile"].attributes["full-path"]
-        guard let fullPath = xmlDoc.root["rootfiles"]["rootfile"].attributes["full-path"] else {
+        opfResource.href = xmlFullPath
+        guard let fullPath = xmlFullPath else {
             throw FolioReaderError.fullPathEmpty
         }
         opfResource.mediaType = MediaType.by(fileName: fullPath)
@@ -142,10 +144,10 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
         var identifier: String?
 
         let opfData = try Data(contentsOf: URL(fileURLWithPath: opfPath), options: .alwaysMapped)
-        let xmlDoc = try AEXMLDocument(xml: opfData)
+        let xmlDoc = try XMLDocument(data: opfData)
 
         // Base OPF info
-        if let package = xmlDoc.children.first {
+        if let package = xmlDoc.root {
             identifier = package.attributes["unique-identifier"]
 
             if let version = package.attributes["version"] {
@@ -154,27 +156,31 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
         }
 
         // Parse and save each "manifest item"
-        xmlDoc.root["manifest"]["item"].all?.forEach {
-            let resource = FRResource()
-            resource.id = $0.attributes["id"]
-            resource.properties = $0.attributes["properties"]
-            resource.href = $0.attributes["href"]
-            resource.fullHref = resourcesBasePath.appendingPathComponent(resource.href).removingPercentEncoding
-            resource.mediaType = MediaType.by(name: $0.attributes["media-type"] ?? "", fileName: resource.href)
-            resource.mediaOverlay = $0.attributes["media-overlay"]
+        if let manifestItems = xmlDoc.root?.firstChild(tag: "manifest")?.children {
+            manifestItems.forEach {
+                let resource = FRResource()
+                resource.id = $0.attributes["id"]
+                resource.properties = $0.attributes["properties"]
+                resource.href = $0.attributes["href"]
+                resource.fullHref = resourcesBasePath.appendingPathComponent(resource.href).removingPercentEncoding
+                resource.mediaType = MediaType.by(name: $0.attributes["media-type"] ?? "", fileName: resource.href)
+                resource.mediaOverlay = $0.attributes["media-overlay"]
 
-            // if a .smil file is listed in resources, go parse that file now and save it on book model
-            if (resource.mediaType != nil && resource.mediaType == .smil) {
-                readSmilFile(resource)
+                // if a .smil file is listed in resources, go parse that file now and save it on book model
+                if (resource.mediaType != nil && resource.mediaType == .smil) {
+                    readSmilFile(resource)
+                }
+
+                book.resources.add(resource)
             }
-
-            book.resources.add(resource)
         }
 
         book.smils.basePath = resourcesBasePath
 
         // Read metadata
-        book.metadata = readMetadata(xmlDoc.root["metadata"].children)
+        if let metadata = xmlDoc.root?.firstChild(tag: "metadata") {
+            book.metadata = readMetadata(metadata.children)
+        }
 
         // Read the book unique identifier
         if let identifier = identifier, let uniqueIdentifier = book.metadata.find(identifierById: identifier) {
@@ -207,12 +213,12 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
         book.flatTableOfContents = flatTOC
 
         // Read Spine
-        let spine = xmlDoc.root["spine"]
-        book.spine = readSpine(spine.children)
-
-        // Page progress direction `ltr` or `rtl`
-        if let pageProgressionDirection = spine.attributes["page-progression-direction"] {
-            book.spine.pageProgressionDirection = pageProgressionDirection
+        if let spine = xmlDoc.root?.firstChild(tag: "spine") {
+            book.spine = readSpine(spine.children)
+            // Page progress direction `ltr` or `rtl`
+            if let pageProgressionDirection = spine.attributes["page-progression-direction"] {
+                book.spine.pageProgressionDirection = pageProgressionDirection
+            }
         }
     }
 
@@ -223,11 +229,9 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
         do {
             let smilData = try Data(contentsOf: URL(fileURLWithPath: resource.fullHref), options: .alwaysMapped)
             var smilFile = FRSmilFile(resource: resource)
-            let xmlDoc = try AEXMLDocument(xml: smilData)
+            let xmlDoc = try XMLDocument(data: smilData)
 
-            let children = xmlDoc.root["body"].children
-
-            if children.count > 0 {
+            if let children = xmlDoc.root?.firstChild(tag: "body")?.children, children.count > 0 {
                 smilFile.data.append(contentsOf: readSmilFileElements(children))
             }
 
@@ -237,12 +241,12 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
         }
     }
 
-    private func readSmilFileElements(_ children: [AEXMLElement]) -> [FRSmilElement] {
+    private func readSmilFileElements(_ children: [XMLElement]) -> [FRSmilElement] {
         var data = [FRSmilElement]()
 
         // convert each smil element to a FRSmil object
         children.forEach{
-            let smil = FRSmilElement(name: $0.name, attributes: $0.attributes)
+            let smil = FRSmilElement(name: $0.tag!, attributes: $0.attributes)
 
             // if this element has children, convert them to objects too
             if $0.children.count > 0 {
@@ -261,6 +265,7 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
     private func findTableOfContents() -> [FRTocReference] {
         var tableOfContent = [FRTocReference]()
         var tocItems: [AEXMLElement]?
+        var fuziTocItems: [XMLElement]?
         guard let tocResource = book.tocResource else { return tableOfContent }
         let tocPath = resourcesBasePath.appendingPathComponent(tocResource.href)
 
@@ -268,12 +273,18 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
             if tocResource.mediaType == MediaType.ncx {
                 let ncxData = try Data(contentsOf: URL(fileURLWithPath: tocPath), options: .alwaysMapped)
                 let xmlDoc = try AEXMLDocument(xml: ncxData)
+                let fuziXmlDoc = try XMLDocument(data: ncxData)
                 if let itemsList = xmlDoc.root["navMap"]["navPoint"].all {
                     tocItems = itemsList
+                }
+
+                if let fuziItemsList = fuziXmlDoc.root?.firstChild(tag: "navMap")?.children(tag: "navPoint") {
+                    fuziTocItems = fuziItemsList
                 }
             } else {
                 let tocData = try Data(contentsOf: URL(fileURLWithPath: tocPath), options: .alwaysMapped)
                 let xmlDoc = try AEXMLDocument(xml: tocData)
+                let fuziXmlDoc = try XMLDocument(data: tocData)
 
                 if let nav = xmlDoc.root["body"]["nav"].first, let itemsList = nav["ol"]["li"].all {
                     tocItems = itemsList
@@ -383,63 +394,63 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
     ///
     /// - Parameter tags: XHTML tags
     /// - Returns: Metadata object
-    fileprivate func readMetadata(_ tags: [AEXMLElement]) -> FRMetadata {
+    fileprivate func readMetadata(_ tags: [XMLElement]) -> FRMetadata {
         let metadata = FRMetadata()
 
-        for tag in tags {
-            if tag.name == "dc:title" {
-                metadata.titles.append(tag.value ?? "")
+        for element in tags {
+            if element.tag == "title" {
+                metadata.titles.append(element.stringValue ?? "")
             }
 
-            if tag.name == "dc:identifier" {
-                let identifier = Identifier(id: tag.attributes["id"], scheme: tag.attributes["opf:scheme"], value: tag.value)
+            if element.tag == "identifier" {
+                let identifier = Identifier(id: element.attributes["id"], scheme: element.attributes["opf:scheme"], value: element.stringValue)
                 metadata.identifiers.append(identifier)
             }
 
-            if tag.name == "dc:language" {
-                let language = tag.value ?? metadata.language
+            if element.tag == "language" {
+                let language = element.stringValue ?? metadata.language
                 metadata.language = language != "en" ? language : metadata.language
             }
 
-            if tag.name == "dc:creator" {
-                metadata.creators.append(Author(name: tag.value ?? "", role: tag.attributes["opf:role"] ?? "", fileAs: tag.attributes["opf:file-as"] ?? ""))
+            if element.tag == "creator" {
+                metadata.creators.append(Author(name: element.stringValue ?? "", role: element.attributes["opf:role"] ?? "", fileAs: element.attributes["opf:file-as"] ?? ""))
             }
 
-            if tag.name == "dc:contributor" {
-                metadata.creators.append(Author(name: tag.value ?? "", role: tag.attributes["opf:role"] ?? "", fileAs: tag.attributes["opf:file-as"] ?? ""))
+            if element.tag == "contributor" {
+                metadata.creators.append(Author(name: element.stringValue ?? "", role: element.attributes["opf:role"] ?? "", fileAs: element.attributes["opf:file-as"] ?? ""))
             }
 
-            if tag.name == "dc:publisher" {
-                metadata.publishers.append(tag.value ?? "")
+            if element.tag == "publisher" {
+                metadata.publishers.append(element.stringValue ?? "")
             }
 
-            if tag.name == "dc:description" {
-                metadata.descriptions.append(tag.value ?? "")
+            if element.tag == "description" {
+                metadata.descriptions.append(element.stringValue ?? "")
             }
 
-            if tag.name == "dc:subject" {
-                metadata.subjects.append(tag.value ?? "")
+            if element.tag == "subject" {
+                metadata.subjects.append(element.stringValue ?? "")
             }
 
-            if tag.name == "dc:rights" {
-                metadata.rights.append(tag.value ?? "")
+            if element.tag == "rights" {
+                metadata.rights.append(element.stringValue ?? "")
             }
 
-            if tag.name == "dc:date" {
-                metadata.dates.append(EventDate(date: tag.value ?? "", event: tag.attributes["opf:event"] ?? ""))
+            if element.tag == "date" {
+                metadata.dates.append(EventDate(date: element.stringValue ?? "", event: element.attributes["opf:event"] ?? ""))
             }
 
-            if tag.name == "meta" {
-                if tag.attributes["name"] != nil {
-                    metadata.metaAttributes.append(Meta(name: tag.attributes["name"], content: tag.attributes["content"]))
+            if element.tag == "meta" {
+                if element.attributes["name"] != nil {
+                    metadata.metaAttributes.append(Meta(name: element.attributes["name"], content: element.attributes["content"]))
                 }
 
-                if tag.attributes["property"] != nil && tag.attributes["id"] != nil {
-                    metadata.metaAttributes.append(Meta(id: tag.attributes["id"], property: tag.attributes["property"], value: tag.value))
+                if element.attributes["property"] != nil && element.attributes["id"] != nil {
+                    metadata.metaAttributes.append(Meta(id: element.attributes["id"], property: element.attributes["property"], value: element.stringValue))
                 }
 
-                if tag.attributes["property"] != nil {
-                    metadata.metaAttributes.append(Meta(property: tag.attributes["property"], value: tag.value, refines: tag.attributes["refines"]))
+                if element.attributes["property"] != nil {
+                    metadata.metaAttributes.append(Meta(property: element.attributes["property"], value: element.stringValue, refines: element.attributes["refines"]))
                 }
             }
         }
@@ -450,7 +461,7 @@ class FREpubParser: NSObject, SSZipArchiveDelegate {
     ///
     /// - Parameter tags: XHTML tags
     /// - Returns: Spine object
-    fileprivate func readSpine(_ tags: [AEXMLElement]) -> FRSpine {
+    fileprivate func readSpine(_ tags: [XMLElement]) -> FRSpine {
         let spine = FRSpine()
 
         for tag in tags {
