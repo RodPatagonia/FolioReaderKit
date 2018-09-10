@@ -19,7 +19,7 @@ class ViewController: UIViewController {
         super.viewDidLoad()
 
         self.bookOne?.tag = Epub.bookOne.rawValue
-        self.bookTwo?.tag = Epub.bookTwo.rawValue
+        self.bookTwo?.tag = Epub.bookThree.rawValue
 
         self.setCover(self.bookOne, index: 0)
         self.setCover(self.bookTwo, index: 1)
